@@ -26,15 +26,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # Step 2: Build Docker image
-      - name: Build Docker image
-        run: docker build -t anshultaklikar/docker-react -f Dockerfile.dev .
+      # Step 2: Install dependencies (without cache)
+      - name: Install Dependencies
+        run: npm install
 
-      # Step 3: Run Docker container to execute tests
+      # Step 3: Check installed dependencies
+      - name: Check installed dependencies
+        run: npm list --depth=0
+
+      # Step 4: Build Docker image without cache
+      - name: Build Docker image without cache
+        run: docker build --no-cache -t anshultaklikar/docker-react -f Dockerfile.dev .
+
+      # Step 5: Run tests inside Docker container
       - name: Run tests inside Docker container
-        run: docker run --rm anshultaklikar/docker-react npm run test -- --coverage
+        run: docker run --rm anshultaklikar/docker-react npm run test -- --coverage --watchAll=false
 
-      # Step 4: Check if container has stopped
+      # Step 6: Debug and check containers
       - name: Debug and check containers
         run: docker ps -a
-
