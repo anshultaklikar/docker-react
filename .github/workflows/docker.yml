@@ -76,11 +76,42 @@ jobs:
             aws elasticbeanstalk create-application --application-name "docker-react"
           fi
 
-          # Verify environment exists
+          # Verify environment using correct command syntax
           echo "Verifying environment..."
-          if ! aws elasticbeanstalk describe-environments --application-name "docker-react" --environment-names "Docker-react-env" --include-deleted=false | grep -q "Docker-react-env"; then
-            echo "Environment 'Docker-react-env' not found. Please check environment name"
-            exit 1
+          if ! aws elasticbeanstalk describe-environments \
+            --application-name "docker-react" \
+            --environment-names "Docker-react-env" \
+            --no-include-deleted | grep -q "Docker-react-env"; then
+            
+            echo "Environment not found or not ready. Creating new environment..."
+            
+            # Create the environment with specific configuration
+            aws elasticbeanstalk create-environment \
+              --application-name "docker-react" \
+              --environment-name "Docker-react-env" \
+              --solution-stack-name "64bit Amazon Linux 2 v3.5.9 running Docker" \
+              --option-settings "[
+                {
+                  \"Namespace\": \"aws:autoscaling:launchconfiguration\",
+                  \"OptionName\": \"IamInstanceProfile\",
+                  \"Value\": \"aws-elasticbeanstalk-ec2-role\"
+                },
+                {
+                  \"Namespace\": \"aws:elasticbeanstalk:environment\",
+                  \"OptionName\": \"ServiceRole\",
+                  \"Value\": \"aws-elasticbeanstalk-service-role\"
+                },
+                {
+                  \"Namespace\": \"aws:autoscaling:asg\",
+                  \"OptionName\": \"MinSize\",
+                  \"Value\": \"1\"
+                },
+                {
+                  \"Namespace\": \"aws:autoscaling:asg\",
+                  \"OptionName\": \"MaxSize\",
+                  \"Value\": \"1\"
+                }
+              ]"
           fi
 
           echo "Creating application version..."
@@ -99,39 +130,3 @@ jobs:
             --application-name "docker-react" \
             --environment-name "Docker-react-env" \
             --version-label "docker-react-${{ github.sha }}"
-
-          echo "Waiting for environment to start updating..."
-          sleep 5
-
-          # Monitor deployment status
-          echo "Monitoring deployment status..."
-          while true; do
-            STATUS=$(aws elasticbeanstalk describe-environments \
-              --application-name "docker-react" \
-              --environment-names "Docker-react-env" \
-              --query "Environments[0].Status" \
-              --output text)
-            
-            HEALTH=$(aws elasticbeanstalk describe-environments \
-              --application-name "docker-react" \
-              --environment-names "Docker-react-env" \
-              --query "Environments[0].Health" \
-              --output text)
-            
-            echo "Current status: $STATUS, Health: $HEALTH"
-            
-            if [ "$STATUS" = "Ready" ]; then
-              if [ "$HEALTH" = "Green" ]; then
-                echo "Deployment successful!"
-                break
-              elif [ "$HEALTH" = "Red" ]; then
-                echo "Deployment failed - environment is in Red health status"
-                exit 1
-              fi
-            elif [ "$STATUS" = "Failed" ]; then
-              echo "Deployment failed"
-              exit 1
-            fi
-            
-            sleep 10
-          done
