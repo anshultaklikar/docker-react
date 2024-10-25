@@ -17,6 +17,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      # Debug step to check if secrets are available (will be masked in logs)
+      - name: Check if secrets exist
+        run: |
+          if [ -n "${{ secrets.AWS_ACCESS_KEY_ID }}" ]; then
+            echo "AWS_ACCESS_KEY_ID is set"
+          else
+            echo "AWS_ACCESS_KEY_ID is not set"
+          fi
+          if [ -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+            echo "AWS_SECRET_ACCESS_KEY is set"
+          else
+            echo "AWS_SECRET_ACCESS_KEY is not set"
+          fi
+
       # Build and test
       - name: Build Docker image for testing
         run: docker build -t anshultaklikar/docker-react -f Dockerfile.dev .
@@ -28,13 +42,20 @@ jobs:
       - name: Build production Docker image
         run: docker build -t anshultaklikar/docker-react .
 
-      # Configure AWS credentials
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
-          aws-region: ap-south-1
+      # Try alternative AWS credentials configuration
+      - name: Configure AWS Credentials
+        run: |
+          mkdir -p ~/.aws
+          echo "[default]
+          aws_access_key_id=${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          region=ap-south-1" > ~/.aws/credentials
+          
+          echo "[default]
+          region=ap-south-1" > ~/.aws/config
+          
+          # Verify AWS configuration
+          aws sts get-caller-identity
 
       # Create deployment package
       - name: Generate deployment package
@@ -45,14 +66,17 @@ jobs:
         run: |
           aws s3 cp deploy.zip s3://elasticbeanstalk-ap-south-1-798114842310/deploy-${{ github.sha }}.zip
 
-      # Deploy to Elastic Beanstalk
+      # Deploy to Elastic Beanstalk using AWS CLI instead of the action
       - name: Deploy to AWS Elastic Beanstalk
-        uses: einaregilsson/beanstalk-deploy@v21
-        with:
-          aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          application_name: "docker-react"
-          environment_name: "Docker-react-env"
-          region: "ap-south-1"
-          version_label: "docker-react-${{ github.sha }}"
-          deployment_package: deploy.zip
+        run: |
+          # Create new application version
+          aws elasticbeanstalk create-application-version \
+            --application-name "docker-react" \
+            --version-label "docker-react-${{ github.sha }}" \
+            --source-bundle S3Bucket="elasticbeanstalk-ap-south-1-798114842310",S3Key="deploy-${{ github.sha }}.zip"
+          
+          # Update environment with new version
+          aws elasticbeanstalk update-environment \
+            --application-name "docker-react" \
+            --environment-name "Docker-react-env" \
+            --version-label "docker-react-${{ github.sha }}"
