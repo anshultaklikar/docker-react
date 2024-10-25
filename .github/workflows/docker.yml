@@ -1,4 +1,4 @@
-name: Docker CI
+name: Docker CI/CD
 
 on:
   push:
@@ -12,30 +12,45 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    # Optional: You can check Docker version and info
     steps:
-      - name: Check Docker version
-        run: docker --version
-
       - name: Checkout code
         uses: actions/checkout@v3
 
+      # Build test image
       - name: Build Docker image
         run: docker build -t anshultaklikar/docker-react -f Dockerfile.dev .
 
+      # Run tests
       - name: Run tests inside Docker container
         run: docker run -e CI=true anshultaklikar/docker-react npm run test -- --coverage
 
-      # Step 4: Deploy to AWS Elastic Beanstalk
-      # Only run deployment on push to main branch
+      # Build production image
+      - name: Build production Docker image
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: docker build -t anshultaklikar/docker-react .
+
+      # Create deployment package
+      - name: Generate deployment package
+        run: |
+          zip -r deploy.zip . -x '*.git*'
+
+      # Configure AWS credentials
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_KEY }}
+          aws-region: ap-south-1
+
+      # Deploy to EB
       - name: Deploy to AWS Elastic Beanstalk
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: einaregilsson/beanstalk-deploy@v21
         with:
           aws_access_key: ${{ secrets.AWS_ACCESS_KEY }}
           aws_secret_key: ${{ secrets.AWS_SECRET_KEY }}
-          application_name: "docker-react"
-          environment_name: "Docker-react-env"
+          application_name: "docker-react-app"    # Make sure this matches your EB application name
+          environment_name: "Docker-react-env"    # Make sure this matches your EB environment name
           region: "ap-south-1"
-          version_label: ${{ github.sha }}
-          deployment_package: Dockerfile
+          version_label: "docker-react-${{ github.sha }}"
+          deployment_package: deploy.zip
