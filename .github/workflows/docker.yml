@@ -1,132 +1,64 @@
-name: Docker CI/CD
-
-on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
-
-jobs:
-  build-and-deploy:
+deploy:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      # Debug step to check if secrets are available (will be masked in logs)
-      - name: Check if secrets exist
-        run: |
-          if [ -n "${{ secrets.AWS_ACCESS_KEY_ID }}" ]; then
-            echo "AWS_ACCESS_KEY_ID is set"
-          else
-            echo "AWS_ACCESS_KEY_ID is not set"
-          fi
-          if [ -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
-            echo "AWS_SECRET_ACCESS_KEY is set"
-          else
-            echo "AWS_SECRET_ACCESS_KEY is not set"
-          fi
-
-      # Build and test
-      - name: Build Docker image for testing
-        run: docker build -t anshultaklikar/docker-react -f Dockerfile.dev .
-
-      - name: Run tests
-        run: docker run -e CI=true anshultaklikar/docker-react npm run test -- --coverage
-
-      # Build production image
-      - name: Build production Docker image
-        run: docker build -t anshultaklikar/docker-react .
-
-      # Try alternative AWS credentials configuration
-      - name: Configure AWS Credentials
-        run: |
-          mkdir -p ~/.aws
-          echo "[default]
-          aws_access_key_id=${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws_secret_access_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          region=ap-south-1" > ~/.aws/credentials
-          
-          echo "[default]
-          region=ap-south-1" > ~/.aws/config
-          
-          # Verify AWS configuration
-          aws sts get-caller-identity
-
-      # Create deployment package
-      - name: Generate deployment package
-        run: zip -r deploy.zip .
-
-      # Upload to S3
-      - name: Upload to S3
-        run: |
-          aws s3 cp deploy.zip s3://elasticbeanstalk-ap-south-1-798114842310/deploy-${{ github.sha }}.zip
-
-      # Deploy to Elastic Beanstalk with error checking
-      - name: Deploy to AWS Elastic Beanstalk
-        run: |
-          # Verify application exists
-          echo "Verifying application..."
-          if ! aws elasticbeanstalk describe-applications --application-names "docker-react" > /dev/null 2>&1; then
-            echo "Application 'docker-react' not found. Creating it..."
-            aws elasticbeanstalk create-application --application-name "docker-react"
-          fi
-
-          # Verify environment using correct command syntax
-          echo "Verifying environment..."
-          if ! aws elasticbeanstalk describe-environments \
-            --application-name "docker-react" \
-            --environment-names "Docker-react-env" \
-            --no-include-deleted | grep -q "Docker-react-env"; then
-            
-            echo "Environment not found or not ready. Creating new environment..."
-            
-            # Create the environment with specific configuration
-            aws elasticbeanstalk create-environment \
-              --application-name "docker-react" \
-              --environment-name "Docker-react-env" \
-              --solution-stack-name "64bit Amazon Linux 2 v3.5.9 running Docker" \
-              --option-settings "[
-                {
-                  \"Namespace\": \"aws:autoscaling:launchconfiguration\",
-                  \"OptionName\": \"IamInstanceProfile\",
-                  \"Value\": \"aws-elasticbeanstalk-ec2-role\"
-                },
-                {
-                  \"Namespace\": \"aws:elasticbeanstalk:environment\",
-                  \"OptionName\": \"ServiceRole\",
-                  \"Value\": \"aws-elasticbeanstalk-service-role\"
-                },
-                {
-                  \"Namespace\": \"aws:autoscaling:asg\",
-                  \"OptionName\": \"MinSize\",
-                  \"Value\": \"1\"
-                },
-                {
-                  \"Namespace\": \"aws:autoscaling:asg\",
-                  \"OptionName\": \"MaxSize\",
-                  \"Value\": \"1\"
-                }
-              ]"
-          fi
-
-          echo "Creating application version..."
-          aws elasticbeanstalk create-application-version \
-            --application-name "docker-react" \
-            --version-label "docker-react-${{ github.sha }}" \
-            --description "Deployment from GitHub Actions" \
-            --source-bundle S3Bucket="elasticbeanstalk-ap-south-1-798114842310",S3Key="deploy-${{ github.sha }}.zip" \
-            --auto-create-application
-
-          echo "Waiting for application version to be processed..."
-          sleep 10
-
-          echo "Updating environment..."
-          aws elasticbeanstalk update-environment \
-            --application-name "docker-react" \
-            --environment-name "Docker-react-env" \
-            --version-label "docker-react-${{ github.sha }}"
+    - uses: actions/checkout@v2
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '16.x'
+    
+    - name: Install dependencies
+      run: npm install
+    
+    - name: Build React app
+      run: npm run build
+    
+    - name: Generate deployment package
+      run: zip -r deploy.zip * -x "node_modules/*"
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+    
+    - name: Create Launch Template
+      run: |
+        aws ec2 create-launch-template \
+          --launch-template-name "eb-launch-template" \
+          --version-description "Launch template for EB" \
+          --launch-template-data '{
+            "InstanceType": "t2.micro",
+            "ImageId": "ami-0c55b159cbfafe1f0",
+            "SecurityGroupIds": ["${{ secrets.SECURITY_GROUP_ID }}"],
+            "IamInstanceProfile": {
+              "Name": "aws-elasticbeanstalk-ec2-role"
+            }
+          }'
+    
+    - name: Update Elastic Beanstalk environment
+      run: |
+        aws elasticbeanstalk update-environment \
+          --environment-name "Docker-react-env" \
+          --option-settings "[
+            {
+              \"Namespace\": \"aws:autoscaling:launchconfiguration\",
+              \"OptionName\": \"LaunchTemplateId\",
+              \"Value\": \"${LAUNCH_TEMPLATE_ID}\"
+            }
+          ]"
+      env:
+        LAUNCH_TEMPLATE_ID: $(aws ec2 describe-launch-templates --launch-template-name "eb-launch-template" --query 'LaunchTemplates[0].LaunchTemplateId' --output text)
+    
+    - name: Deploy to EB
+      uses: einaregilsson/beanstalk-deploy@v21
+      with:
+        aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        application_name: your-application-name
+        environment_name: Docker-react-env
+        region: ${{ secrets.AWS_REGION }}
+        deployment_package: deploy.zip
+        wait_for_deployment: true
