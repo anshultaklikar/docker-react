@@ -9,4 +9,4 @@ RUN npm run build
 FROM nginx
 EXPOSE 80
 # take build folder from the above container
-COPY --from=builder /app/build usr/share/nginx/html
+COPY --from=builder /app/build /usr/share/nginx/html
