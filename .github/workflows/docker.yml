@@ -17,7 +17,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # Debug step to check if secrets are available (will be masked in logs)
+      # Previous steps remain the same until the Deploy step
       - name: Check if secrets exist
         run: |
           if [ -n "${{ secrets.AWS_ACCESS_KEY_ID }}" ]; then
@@ -31,18 +31,15 @@ jobs:
             echo "AWS_SECRET_ACCESS_KEY is not set"
           fi
 
-      # Build and test
       - name: Build Docker image for testing
         run: docker build -t anshultaklikar/docker-react -f Dockerfile.dev .
 
       - name: Run tests
         run: docker run -e CI=true anshultaklikar/docker-react npm run test -- --coverage
 
-      # Build production image
       - name: Build production Docker image
         run: docker build -t anshultaklikar/docker-react .
 
-      # Try alternative AWS credentials configuration
       - name: Configure AWS Credentials
         run: |
           mkdir -p ~/.aws
@@ -54,21 +51,88 @@ jobs:
           echo "[default]
           region=ap-south-1" > ~/.aws/config
           
-          # Verify AWS configuration
           aws sts get-caller-identity
 
-      # Create deployment package
       - name: Generate deployment package
         run: zip -r deploy.zip .
 
-      # Upload to S3
       - name: Upload to S3
         run: |
           aws s3 cp deploy.zip s3://elasticbeanstalk-ap-south-1-798114842310/deploy-${{ github.sha }}.zip
 
-      # Deploy to Elastic Beanstalk with error checking
+      # Updated Deploy step with launch template support
       - name: Deploy to AWS Elastic Beanstalk
         run: |
+          # Function to check environment status
+          check_env_status() {
+            aws elasticbeanstalk describe-environments \
+              --application-name "docker-react" \
+              --environment-names "Docker-react-env" \
+              --query "Environments[0].Status" \
+              --output text
+          }
+
+          # Function to wait for environment to be ready
+          wait_for_environment() {
+            echo "Waiting for environment to be ready..."
+            while true; do
+              STATUS=$(check_env_status)
+              echo "Current environment status: $STATUS"
+              if [ "$STATUS" = "Ready" ]; then
+                break
+              elif [ "$STATUS" = "Terminated" ] || [ "$STATUS" = "Terminating" ]; then
+                echo "Environment is terminated or terminating. Creating new environment..."
+                return 1
+              fi
+              echo "Waiting 30 seconds before checking again..."
+              sleep 30
+            done
+            return 0
+          }
+
+          # Create or update launch template
+          echo "Creating/updating launch template..."
+          TEMPLATE_NAME="docker-react-template"
+          
+          # Get latest Amazon Linux 2 AMI ID for your region
+          AMI_ID=$(aws ec2 describe-images \
+            --owners amazon \
+            --filters "Name=name,Values=amzn2-ami-hvm-*-x86_64-gp2" \
+            --query "sort_by(Images, &CreationDate)[-1].ImageId" \
+            --output text)
+
+          # Create or update launch template
+          aws ec2 create-launch-template-version \
+            --launch-template-name "$TEMPLATE_NAME" \
+            --version-description "Version for Elastic Beanstalk" \
+            --launch-template-data "{
+              \"ImageId\": \"$AMI_ID\",
+              \"InstanceType\": \"t2.micro\",
+              \"IamInstanceProfile\": {
+                \"Name\": \"aws-elasticbeanstalk-ec2-role\"
+              },
+              \"UserData\": \"$(echo -n '#!/bin/bash\necho "Launch template user data"' | base64 -w 0)\"
+            }" \
+            --no-cli-pager || \
+          aws ec2 create-launch-template \
+            --launch-template-name "$TEMPLATE_NAME" \
+            --version-description "Version for Elastic Beanstalk" \
+            --launch-template-data "{
+              \"ImageId\": \"$AMI_ID\",
+              \"InstanceType\": \"t2.micro\",
+              \"IamInstanceProfile\": {
+                \"Name\": \"aws-elasticbeanstalk-ec2-role\"
+              },
+              \"UserData\": \"$(echo -n '#!/bin/bash\necho "Launch template user data"' | base64 -w 0)\"
+            }" \
+            --no-cli-pager
+
+          # Get launch template ID
+          TEMPLATE_ID=$(aws ec2 describe-launch-templates \
+            --launch-template-names "$TEMPLATE_NAME" \
+            --query "LaunchTemplates[0].LaunchTemplateId" \
+            --output text)
+
           # Verify application exists
           echo "Verifying application..."
           if ! aws elasticbeanstalk describe-applications --application-names "docker-react" > /dev/null 2>&1; then
@@ -76,16 +140,16 @@ jobs:
             aws elasticbeanstalk create-application --application-name "docker-react"
           fi
 
-          # Verify environment using correct command syntax
-          echo "Verifying environment..."
-          if ! aws elasticbeanstalk describe-environments \
+          # Check if environment exists
+          ENV_EXISTS=$(aws elasticbeanstalk describe-environments \
             --application-name "docker-react" \
             --environment-names "Docker-react-env" \
-            --no-include-deleted | grep -q "Docker-react-env"; then
-            
-            echo "Environment not found or not ready. Creating new environment..."
-            
-            # Create the environment with specific configuration
+            --no-include-deleted \
+            --query "length(Environments)" \
+            --output text)
+
+          if [ "$ENV_EXISTS" = "0" ]; then
+            echo "Creating new environment with launch template..."
             aws elasticbeanstalk create-environment \
               --application-name "docker-react" \
               --environment-name "Docker-react-env" \
@@ -93,8 +157,8 @@ jobs:
               --option-settings "[
                 {
                   \"Namespace\": \"aws:autoscaling:launchconfiguration\",
-                  \"OptionName\": \"IamInstanceProfile\",
-                  \"Value\": \"aws-elasticbeanstalk-ec2-role\"
+                  \"OptionName\": \"LaunchTemplateId\",
+                  \"Value\": \"$TEMPLATE_ID\"
                 },
                 {
                   \"Namespace\": \"aws:elasticbeanstalk:environment\",
@@ -114,6 +178,9 @@ jobs:
               ]"
           fi
 
+          # Wait for environment to be ready
+          wait_for_environment
+
           echo "Creating application version..."
           aws elasticbeanstalk create-application-version \
             --application-name "docker-react" \
@@ -123,7 +190,7 @@ jobs:
             --auto-create-application
 
           echo "Waiting for application version to be processed..."
-          sleep 10
+          sleep 30
 
           echo "Updating environment..."
           aws elasticbeanstalk update-environment \
