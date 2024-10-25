@@ -33,3 +33,8 @@ jobs:
       # Step 3: Run Docker container to execute tests
       - name: Run tests inside Docker container
         run: docker run --rm anshultaklikar/docker-react npm run test -- --coverage --watchAll=false
+
+      # Step 4: Check if container has stopped
+      - name: Debug and check containers
+        run: docker ps -a
+
