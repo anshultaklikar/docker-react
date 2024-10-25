@@ -1,0 +1,35 @@
+name: Docker CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      docker:
+        image: docker:19.03.12
+        options: --privileged
+        ports:
+          - 2375:2375
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock
+
+    steps:
+      # Step 1: Checkout the code
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Step 2: Build Docker image
+      - name: Build Docker image
+        run: docker build -t anshultaklikar/docker-react -f Dockerfile.dev .
+
+      # Step 3: Run Docker container to execute tests
+      - name: Run tests inside Docker container
+        run: docker run --rm anshultaklikar/docker-react npm run test -- --coverage --watchAll=false
