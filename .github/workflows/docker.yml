@@ -66,17 +66,72 @@ jobs:
         run: |
           aws s3 cp deploy.zip s3://elasticbeanstalk-ap-south-1-798114842310/deploy-${{ github.sha }}.zip
 
-      # Deploy to Elastic Beanstalk using AWS CLI instead of the action
+      # Deploy to Elastic Beanstalk with error checking
       - name: Deploy to AWS Elastic Beanstalk
         run: |
-          # Create new application version
+          # Verify application exists
+          echo "Verifying application..."
+          if ! aws elasticbeanstalk describe-applications --application-names "docker-react" > /dev/null 2>&1; then
+            echo "Application 'docker-react' not found. Creating it..."
+            aws elasticbeanstalk create-application --application-name "docker-react"
+          fi
+
+          # Verify environment exists
+          echo "Verifying environment..."
+          if ! aws elasticbeanstalk describe-environments --application-name "docker-react" --environment-names "Docker-react-env" --include-deleted=false | grep -q "Docker-react-env"; then
+            echo "Environment 'Docker-react-env' not found. Please check environment name"
+            exit 1
+          fi
+
+          echo "Creating application version..."
           aws elasticbeanstalk create-application-version \
             --application-name "docker-react" \
             --version-label "docker-react-${{ github.sha }}" \
-            --source-bundle S3Bucket="elasticbeanstalk-ap-south-1-798114842310",S3Key="deploy-${{ github.sha }}.zip"
-          
-          # Update environment with new version
+            --description "Deployment from GitHub Actions" \
+            --source-bundle S3Bucket="elasticbeanstalk-ap-south-1-798114842310",S3Key="deploy-${{ github.sha }}.zip" \
+            --auto-create-application
+
+          echo "Waiting for application version to be processed..."
+          sleep 10
+
+          echo "Updating environment..."
           aws elasticbeanstalk update-environment \
             --application-name "docker-react" \
             --environment-name "Docker-react-env" \
             --version-label "docker-react-${{ github.sha }}"
+
+          echo "Waiting for environment to start updating..."
+          sleep 5
+
+          # Monitor deployment status
+          echo "Monitoring deployment status..."
+          while true; do
+            STATUS=$(aws elasticbeanstalk describe-environments \
+              --application-name "docker-react" \
+              --environment-names "Docker-react-env" \
+              --query "Environments[0].Status" \
+              --output text)
+            
+            HEALTH=$(aws elasticbeanstalk describe-environments \
+              --application-name "docker-react" \
+              --environment-names "Docker-react-env" \
+              --query "Environments[0].Health" \
+              --output text)
+            
+            echo "Current status: $STATUS, Health: $HEALTH"
+            
+            if [ "$STATUS" = "Ready" ]; then
+              if [ "$HEALTH" = "Green" ]; then
+                echo "Deployment successful!"
+                break
+              elif [ "$HEALTH" = "Red" ]; then
+                echo "Deployment failed - environment is in Red health status"
+                exit 1
+              fi
+            elif [ "$STATUS" = "Failed" ]; then
+              echo "Deployment failed"
+              exit 1
+            fi
+            
+            sleep 10
+          done
