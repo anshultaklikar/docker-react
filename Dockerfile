@@ -4,6 +4,7 @@ COPY package.json .
 RUN npm install
 COPY . .
 RUN npm run build
+# Above part is only for building react app
 
 # nginx is just like tomcat
 FROM nginx
